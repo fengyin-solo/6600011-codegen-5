@@ -1,7 +1,8 @@
 import { create } from 'zustand';
-import { EEGData, BandPower, BrainState, CorrelationData, Recording, RecordingFrame, PlaybackState } from '../types';
+import { EEGData, BandPower, BrainState, CorrelationData, Recording, RecordingFrame, PlaybackState, AnomalyAlert, AnomalyResult } from '../types';
 
 const STORAGE_KEY = 'eeg_recordings';
+const ANOMALY_STORAGE_KEY = 'eeg_anomaly_alerts';
 
 const loadRecordings = (): Recording[] => {
   try {
@@ -15,6 +16,22 @@ const loadRecordings = (): Recording[] => {
 const saveRecordings = (recordings: Recording[]) => {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(recordings));
+  } catch {}
+};
+
+const loadAnomalyAlerts = (): AnomalyAlert[] => {
+  try {
+    const stored = localStorage.getItem(ANOMALY_STORAGE_KEY);
+    return stored ? JSON.parse(stored) : [];
+  } catch {
+    return [];
+  }
+};
+
+const saveAnomalyAlerts = (alerts: AnomalyAlert[]) => {
+  try {
+    const toSave = alerts.slice(-200);
+    localStorage.setItem(ANOMALY_STORAGE_KEY, JSON.stringify(toSave));
   } catch {}
 };
 
@@ -47,6 +64,15 @@ interface EEGState {
   setPlaybackTime: (time: number) => void;
   togglePlayback: () => void;
   setPlaybackPlaying: (playing: boolean) => void;
+  anomalyResult: AnomalyResult | null;
+  anomalyAlerts: AnomalyAlert[];
+  anomalyAlertCount: number;
+  showAnomalyPanel: boolean;
+  setAnomalyResult: (r: AnomalyResult | null) => void;
+  addAnomalyAlerts: (alerts: AnomalyAlert[]) => void;
+  clearAnomalyAlerts: () => void;
+  toggleAnomalyPanel: () => void;
+  setShowAnomalyPanel: (show: boolean) => void;
 }
 
 export const useEEGStore = create<EEGState>((set, get) => ({
@@ -193,4 +219,22 @@ export const useEEGStore = create<EEGState>((set, get) => ({
       },
     });
   },
+  anomalyResult: null,
+  anomalyAlerts: loadAnomalyAlerts(),
+  anomalyAlertCount: loadAnomalyAlerts().length,
+  showAnomalyPanel: false,
+  setAnomalyResult: (r) => set({ anomalyResult: r }),
+  addAnomalyAlerts: (alerts) => {
+    if (alerts.length === 0) return;
+    const current = get().anomalyAlerts;
+    const updated = [...current, ...alerts];
+    saveAnomalyAlerts(updated);
+    set({ anomalyAlerts: updated, anomalyAlertCount: updated.length });
+  },
+  clearAnomalyAlerts: () => {
+    saveAnomalyAlerts([]);
+    set({ anomalyAlerts: [], anomalyAlertCount: 0 });
+  },
+  toggleAnomalyPanel: () => set((s) => ({ showAnomalyPanel: !s.showAnomalyPanel })),
+  setShowAnomalyPanel: (show) => set({ showAnomalyPanel: show }),
 }));

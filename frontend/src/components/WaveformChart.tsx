@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import { useEEGStore } from '../store/eeg';
-import { EEGData, BandPower, BrainState, CorrelationData } from '../types';
+import { EEGData, BandPower, BrainState, CorrelationData, AnomalyResult, AnomalyAlert } from '../types';
 import axios from 'axios';
 
 const CHANNEL_NAMES: Record<string, string> = {
@@ -106,10 +106,79 @@ const computeCorrelation = (targetChannel: string, eegData: EEGData): Correlatio
   return { targetChannel, correlations };
 };
 
+const SPIKE_THRESHOLD = 3.0;
+const PROLONGED_FATIGUE_THRESHOLD = 60.0;
+const PROLONGED_WINDOW_SIZE = 3;
+const _fatigueHistory: { fatigue: number; timestamp: number }[] = [];
+
+const detectAnomalyFrontend = (channel: string, eegData: EEGData, brainState: BrainState): AnomalyResult => {
+  const alerts: AnomalyAlert[] = [];
+  const channelData = eegData.data[channel] || [];
+  if (channelData.length > 0) {
+    const mean = channelData.reduce((a, b) => a + b, 0) / channelData.length;
+    const std = Math.sqrt(channelData.reduce((a, b) => a + (b - mean) ** 2, 0) / channelData.length);
+    if (std > 1e-10) {
+      const zScores = channelData.map(v => Math.abs((v - mean) / std));
+      const maxZ = Math.max(...zScores);
+      const maxIdx = zScores.indexOf(maxZ);
+      if (maxZ >= SPIKE_THRESHOLD) {
+        alerts.push({
+          type: 'spike',
+          severity: Math.min(1.0, (maxZ - SPIKE_THRESHOLD) / SPIKE_THRESHOLD),
+          channel,
+          description: `通道 ${channel} 检测到脑波突变，Z分数=${maxZ.toFixed(2)}，偏差值=${channelData[maxIdx].toFixed(4)}`,
+          timestamp: Date.now(),
+          maxZScore: Math.round(maxZ * 100) / 100,
+          spikeTime: Math.round((maxIdx / eegData.sample_rate) * 1000) / 1000,
+          spikeValue: channelData[maxIdx],
+          meanValue: Math.round(mean * 10000) / 10000,
+          stdValue: Math.round(std * 10000) / 10000,
+        });
+      }
+    }
+  }
+
+  _fatigueHistory.push({ fatigue: brainState.fatigue, timestamp: brainState.timestamp });
+  const cutoff = Date.now() - 30000;
+  while (_fatigueHistory.length > 0 && _fatigueHistory[0].timestamp < cutoff) {
+    _fatigueHistory.shift();
+  }
+  if (_fatigueHistory.length >= PROLONGED_WINDOW_SIZE) {
+    const recent = _fatigueHistory.slice(-PROLONGED_WINDOW_SIZE);
+    const allFatigued = recent.every(s => s.fatigue >= PROLONGED_FATIGUE_THRESHOLD);
+    const avgFatigue = recent.reduce((a, s) => a + s.fatigue, 0) / recent.length;
+    if (allFatigued && avgFatigue >= PROLONGED_FATIGUE_THRESHOLD) {
+      const startTs = recent[0].timestamp;
+      const endTs = recent[recent.length - 1].timestamp;
+      const durationSec = (endTs - startTs) / 1000;
+      alerts.push({
+        type: 'prolonged_fatigue',
+        severity: Math.min(1.0, (avgFatigue - PROLONGED_FATIGUE_THRESHOLD) / 40.0),
+        channel,
+        description: `通道 ${channel} 持续疲劳状态已 ${durationSec.toFixed(1)}s，平均疲劳度=${avgFatigue.toFixed(1)}`,
+        timestamp: Date.now(),
+        avgFatigue: Math.round(avgFatigue * 10) / 10,
+        durationSec: Math.round(durationSec * 10) / 10,
+        startTimestamp: startTs,
+        endTimestamp: endTs,
+        startTime: new Date(startTs).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+        endTime: new Date(endTs).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+      });
+    }
+  }
+
+  return {
+    channel,
+    hasAnomaly: alerts.length > 0,
+    alerts,
+    timestamp: Date.now(),
+  };
+};
+
 export const WaveformChart: React.FC = () => {
   const {
     eegData, selectedChannel, setEEGData, setBandPower, setBrainState, setCorrelationData,
-    isRecording, addRecordingFrame, playbackMode,
+    isRecording, addRecordingFrame, playbackMode, setAnomalyResult, addAnomalyAlerts,
   } = useEEGStore();
   const [loading, setLoading] = useState(false);
   const intervalRef = useRef<number | null>(null);
@@ -119,22 +188,33 @@ export const WaveformChart: React.FC = () => {
     if (state.playbackMode) return;
     setLoading(true);
     let eeg: EEGData, bands: BandPower, brainState: BrainState, correlation: CorrelationData;
+    let anomaly: AnomalyResult | null = null;
     try {
       const { data } = await axios.get(`/api/eeg/sample/${state.selectedChannel}?duration=3`);
       eeg = data.eeg;
       bands = data.bands;
       brainState = data.brainState;
       correlation = data.correlation;
+      anomaly = data.anomaly || null;
     } catch {
       eeg = generateMockEEG(3);
       bands = computeBandPower();
       brainState = computeBrainState(bands);
       correlation = computeCorrelation(state.selectedChannel, eeg);
+      anomaly = detectAnomalyFrontend(state.selectedChannel, eeg, brainState);
     }
     state.setEEGData(eeg);
     state.setBandPower(bands);
     state.setBrainState(brainState);
     state.setCorrelationData(correlation);
+    if (anomaly) {
+      state.setAnomalyResult(anomaly);
+      if (anomaly.hasAnomaly && anomaly.alerts.length > 0) {
+        state.addAnomalyAlerts(anomaly.alerts);
+      }
+    } else {
+      state.setAnomalyResult(null);
+    }
     if (state.isRecording) {
       state.addRecordingFrame(eeg, bands, brainState);
     }

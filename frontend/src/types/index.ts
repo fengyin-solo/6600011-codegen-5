@@ -42,3 +42,29 @@ export interface PlaybackState {
   currentTime: number;
   currentFrame: RecordingFrame | null;
 }
+
+export interface AnomalyAlert {
+  type: 'spike' | 'prolonged_fatigue';
+  severity: number;
+  channel: string;
+  description: string;
+  timestamp: number;
+  maxZScore?: number;
+  spikeTime?: number;
+  spikeValue?: number;
+  meanValue?: number;
+  stdValue?: number;
+  avgFatigue?: number;
+  durationSec?: number;
+  startTimestamp?: number;
+  endTimestamp?: number;
+  startTime?: string;
+  endTime?: string;
+}
+
+export interface AnomalyResult {
+  channel: string;
+  hasAnomaly: boolean;
+  alerts: AnomalyAlert[];
+  timestamp: number;
+}

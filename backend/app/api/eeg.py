@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from ..services.eeg_processor import generate_mock_eeg, compute_band_power, compute_spectrogram, compute_brain_state, compute_correlation, SAMPLE_RATE
+from ..services.eeg_processor import generate_mock_eeg, compute_band_power, compute_spectrogram, compute_brain_state, compute_correlation, analyze_anomaly, get_anomaly_alerts, clear_anomaly_alerts, SAMPLE_RATE
 
 router = APIRouter(prefix="/eeg", tags=["eeg"])
 
@@ -46,10 +46,31 @@ async def full_sample(channel: str, duration: float = 3.0):
     if channel not in data['data']:
         return {'error': 'Channel not found'}
     channel_data = data['data'][channel]
+    brain_state = compute_brain_state(channel_data, SAMPLE_RATE)
+    anomaly = analyze_anomaly(channel, channel_data, SAMPLE_RATE, brain_state)
     return {
         'channel': channel,
         'eeg': data,
         'bands': compute_band_power(channel_data, SAMPLE_RATE),
-        'brainState': compute_brain_state(channel_data, SAMPLE_RATE),
-        'correlation': compute_correlation(channel, data['data'], SAMPLE_RATE)
+        'brainState': brain_state,
+        'correlation': compute_correlation(channel, data['data'], SAMPLE_RATE),
+        'anomaly': anomaly,
     }
+
+@router.get("/anomaly/{channel}")
+async def anomaly_check(channel: str, duration: float = 3.0):
+    data = generate_mock_eeg(duration)
+    if channel not in data['data']:
+        return {'error': 'Channel not found'}
+    channel_data = data['data'][channel]
+    brain_state = compute_brain_state(channel_data, SAMPLE_RATE)
+    return analyze_anomaly(channel, channel_data, SAMPLE_RATE, brain_state)
+
+@router.get("/anomaly-alerts")
+async def anomaly_alerts(limit: int = 50):
+    return {'alerts': get_anomaly_alerts(limit), 'total': len(get_anomaly_alerts(limit))}
+
+@router.delete("/anomaly-alerts")
+async def anomaly_alerts_clear():
+    clear_anomaly_alerts()
+    return {'status': 'ok', 'message': 'All anomaly alerts cleared'}
